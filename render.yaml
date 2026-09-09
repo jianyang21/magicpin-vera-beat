@@ -4,6 +4,14 @@ services:
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn bot:app --host 0.0.0.0 --port $PORT
+    # --workers 1 is required, not optional: bot.py holds all state (contexts,
+    # conversations, suppression) in plain in-process dicts by design (no
+    # Redis/Postgres). Multiple workers would each get their own separate
+    # copy of that state, silently breaking idempotency, suppression, and
+    # conversation continuity across requests routed to different workers.
+    startCommand: uvicorn bot:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /v1/healthz
     autoDeploy: true
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false

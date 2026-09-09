@@ -8,7 +8,8 @@ from urllib import request as rq
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-BOT = "http://127.0.0.1:8080"
+import os
+BOT = os.environ.get("BOT_URL", "http://127.0.0.1:8080")
 DATASET = Path(__file__).parent.parent / "dataset" / "expanded"
 
 
