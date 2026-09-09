@@ -1087,13 +1087,14 @@ async def healthz():
 async def metadata():
     return {
         "team_name": "Vera Beat",
-        "team_members": ["Shobana"],
-        "model": "deterministic-template-composer-v1 (no external LLM)",
+        "team_members": ["D Shakthi Saravanan"],
+        "model": "deterministic-template-composer-v1 for opening messages; openai/gpt-oss-20b (via Groq) grounded fallback for replies outside the 4 rule-based patterns",
         "approach": "Rule-based composer dispatched by trigger.kind; every field in the message traces back to a "
                      "pushed context field (no fabrication). Reply engine handles auto-reply detection, "
-                     "intent-transition routing, and hostile/opt-out exits deterministically.",
-        "contact_email": "shobanasantosh1998@gmail.com",
-        "version": "1.0.0",
+                     "intent-transition routing, and hostile/opt-out exits deterministically, with a grounded LLM "
+                     "call for everything else.",
+        "contact_email": "dshakthi2003@gmail.com",
+        "version": "1.1.0",
         "submitted_at": now_iso(),
     }
 
