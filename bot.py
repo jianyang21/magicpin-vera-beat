@@ -890,11 +890,30 @@ def _build_llm_context(state: dict) -> str:
     payload = trigger.get("payload", {})
     compact_payload = {k: v for k, v in payload.items() if isinstance(v, (str, int, float, bool)) or v is None}
 
+    # If the trigger points at a specific digest item (research/regulation/CDE
+    # kinds all do this via an id field), resolve its real title/source/
+    # summary here explicitly — don't rely on conversation history alone to
+    # carry that forward. A trigger payload on its own is often just an id
+    # string like "d_2026W17_jida_fluoride"; without the resolved content an
+    # LLM asked about it has nothing but that string to guess from, which is
+    # exactly what produced a fabricated "JIDA is a fluoride treatment"
+    # answer before this was added.
+    item_id = payload.get("top_item_id") or payload.get("digest_item_id")
+    digest_block = ""
+    item = digest_item(category, item_id) if item_id else None
+    if item:
+        digest_block = (
+            f" | referenced digest item: title=\"{item.get('title', '')}\" "
+            f"source={friendly_source(item.get('source'))} "
+            f"summary=\"{item.get('summary', '')[:200]}\""
+        )
+
     return (
         f"Business: {who} ({category.get('slug', 'unknown')}); "
         f"voice: {category.get('voice', {}).get('tone', 'peer')}; "
         f"offers: {offers or 'none'}; "
         f"trigger: {trigger_kind} {json.dumps(compact_payload, ensure_ascii=False)[:250]}"
+        f"{digest_block}"
     )
 
 
@@ -1169,6 +1188,12 @@ def _compose_for_trigger(trg_id: str) -> Optional[dict]:
     conversation_id = f"conv_{merchant_id}_{trg_id}_{uuid.uuid4().hex[:6]}"
     state = conv_state(conversation_id, merchant_id, customer_id, trg_id)
     state["sent_bodies"].add(composed["body"])
+    # Without this, a follow-up reply's LLM call has zero record of what the
+    # opening message actually said — only the trigger's raw payload (often
+    # just an id string) — and will guess. This is what caused the bot to
+    # hallucinate "JIDA is a fluoride treatment" earlier: it never saw the
+    # opening message that had already explained what JIDA actually is.
+    state["history"].append({"from": "vera", "msg": composed["body"]})
 
     return {
         "conversation_id": conversation_id,
@@ -1230,6 +1255,7 @@ async def reply(body: ReplyBody):
         if result["body"] in state["sent_bodies"]:
             result["body"] = "Just circling back on this — still open if you'd like to continue."
         state["sent_bodies"].add(result["body"])
+        state["history"].append({"from": "vera", "msg": result["body"]})
     elif result["action"] == "end" and is_hostile(body.message):
         if body.merchant_id:
             with state_lock:
