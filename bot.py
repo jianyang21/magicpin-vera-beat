@@ -138,6 +138,62 @@ def friendly_source(source: Optional[str]) -> str:
     return source
 
 
+GLOSSARY_QUESTION_CUES = ["what is", "what does", "what's", "who is", "explain", "meaning of", "stands for", "define"]
+
+
+def glossary_answer(message: str) -> Optional[str]:
+    """Deterministic, zero-hallucination answer for a question about a known
+    abbreviation — checked BEFORE the LLM is ever called. An LLM asked to
+    define these has fabricated two different wrong answers for the same
+    term in testing (a fake fluoride treatment, a fake real-world
+    institution) instead of admitting it doesn't know. This bypasses that
+    risk entirely for the whole class of "what does X mean" questions we
+    already have a ground truth for, at zero cost."""
+    lower = message.lower().strip().rstrip("?")
+    looks_like_question = any(cue in lower for cue in GLOSSARY_QUESTION_CUES) or lower in (k.lower() for k in ABBREV_GLOSSARY)
+    if not looks_like_question:
+        return None
+    for abbr, expansion in ABBREV_GLOSSARY.items():
+        if re.search(rf"\b{re.escape(abbr)}\b", message, re.IGNORECASE):
+            return f"{abbr} stands for {expansion}."
+    return None
+
+
+# Words too generic within this category to prove a definition is actually
+# correct — "dental" appears in almost any sentence about a dental term,
+# real or fabricated, so matching on it alone gives a false pass (verified:
+# "Jawaharlal Institute of Dental and Medical Sciences" — completely made
+# up — still contains "dental" and would slip through without this filter).
+_GLOSSARY_GENERIC_WORDS = {"dental", "medical", "india", "indian", "type"}
+
+
+# Only a genuine defining claim needs checking — "JIDA Oct 2026, p.14" or
+# "published in JIDA" are citations, not claims about what JIDA IS, and
+# don't need to re-justify themselves every time they're mentioned. Checking
+# on any mention at all (an earlier version of this function did) produced
+# false positives against perfectly good citation-style sentences.
+_DEFINING_PATTERN = r"\b{abbr}\b\s*(?:is|are|stands for|refers to|means|=)\b"
+
+
+def glossary_grounding_ok(body: str) -> bool:
+    """Safety net for replies that DID go through the LLM (the merchant's
+    phrasing didn't trip glossary_answer() above, e.g. it came up mid-
+    sentence rather than as a direct question). If the reply actually
+    *defines* one of our known terms, that definition must overlap with a
+    distinctive word from what we actually know it means — catches the LLM
+    inventing a wrong expansion, without flagging normal citations."""
+    for abbr, expansion in ABBREV_GLOSSARY.items():
+        if not re.search(_DEFINING_PATTERN.format(abbr=re.escape(abbr)), body, re.IGNORECASE):
+            continue  # not attempting a definition here — a citation like "JIDA Oct 2026, p.14" is fine as-is
+        expansion_words = [
+            w for w in re.findall(r"[a-zA-Z]+", expansion.lower())
+            if len(w) > 3 and w not in _GLOSSARY_GENERIC_WORDS
+        ]
+        if expansion_words and not any(w in body.lower() for w in expansion_words):
+            return False
+    return True
+
+
 def digest_item(category: dict, item_id: str) -> Optional[dict]:
     for item in category.get("digest", []) or []:
         if item.get("id") == item_id:
@@ -1025,6 +1081,18 @@ def llm_reply(state: dict, merchant_message: str) -> dict:
         "rationale": str(parsed.get("rationale", "LLM-composed reply grounded in conversation context.")),
     }
 
+    # Safety net: the LLM sometimes explains a known abbreviation using its
+    # own (wrong) general knowledge instead of admitting it doesn't know,
+    # even when told to only use CONTEXT. If it did that here, override with
+    # the deterministic glossary answer instead of forwarding a fabrication.
+    if not glossary_grounding_ok(result["body"]):
+        corrected = glossary_answer(merchant_message) or next(
+            (f"{a} stands for {e}." for a, e in ABBREV_GLOSSARY.items() if re.search(rf"\b{re.escape(a)}\b", result["body"], re.IGNORECASE)),
+            None,
+        )
+        result["body"] = corrected or "I don't have reliable information on that — let me check and get back to you."
+        result["rationale"] = "LLM's explanation of a known term didn't match the glossary; overridden with the verified definition instead of forwarding a fabrication."
+
     if parsed.get("out_of_scope"):
         state["flags"].append({
             "turn": state["turns"],
@@ -1086,10 +1154,20 @@ def respond(state: dict, merchant_message: str) -> dict:
             "rationale": "Merchant gave explicit commitment; switched directly to action mode instead of re-qualifying (this is the #1 production Vera miss called out in the brief).",
         }
 
+    glossary = glossary_answer(msg)
+    if glossary:
+        return {
+            "action": "send",
+            "body": glossary,
+            "cta": "none",
+            "rationale": "Deterministic glossary lookup — bypassed the LLM entirely for a definitional question we already have ground truth for, since it has fabricated wrong expansions for this exact term in testing.",
+        }
+
     # Everything past this point needs actual understanding, not pattern
     # matching — real questions, acknowledgments, curveballs, anything that
-    # doesn't fit the 4 fixed shapes above. One grounded LLM call, or a safe
-    # deterministic fallback if no key is configured / the call fails.
+    # doesn't fit the fixed shapes above. One grounded LLM call, checked
+    # against the glossary as a safety net, or a safe deterministic fallback
+    # if no key is configured / the call fails.
     return llm_reply(state, msg)
 
 
