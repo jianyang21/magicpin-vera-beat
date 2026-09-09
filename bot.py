@@ -27,6 +27,7 @@ from typing import Any, Optional
 from urllib import request as urlrequest, error as urlerror
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # ---------------------------------------------------------------------------
@@ -59,6 +60,17 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="vera-beat", lifespan=lifespan)
+# This API is meant to be called from anywhere — the judge harness (not
+# subject to CORS at all, since that's a browser-only mechanism), but also
+# browsers hitting /docs directly or any test page. Wide open is correct
+# here: there's no cookie/session auth to protect, no per-user data — every
+# caller sees the same synthetic dataset either way.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 START = time.time()
 state_lock = threading.Lock()
 
